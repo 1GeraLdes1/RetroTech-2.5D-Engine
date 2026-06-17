@@ -1,35 +1,27 @@
-#include <algorithm>
+#include "CustomPixelEngine.h"
+
 #include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <Windows.h>
-#include <shellapi.h>
+#pragma comment(lib, "User32.lib")
+#pragma comment(lib, "Gdi32.lib")
 
-#pragma comment(lib, "Shell32.lib")
-
-#define OLC_PGE_APPLICATION
-#include "olcPixelGameEngine.h"
-
-class RetroTechEngine : public olc::PixelGameEngine
+class RetroTech : public CustomPixelEngine
 {
 public:
-    RetroTechEngine()
+    RetroTech()
+        : CustomPixelEngine(640, 360, 2, L"RetroTech v0.7 - CustomPixelEngine")
     {
-        sAppName = "RetroTech v0.5 - Wall Optimized 2.5D Engine";
     }
 
 private:
-    static constexpr float PI = 3.1415926535f;
-    static constexpr float FOV = 70.0f * PI / 180.0f;
-    static constexpr float HALF_FOV_TAN = 0.7002075f;
+    static constexpr float FOV_TAN_HALF = 0.7002075f;
 
     static constexpr float MOVE_SPEED = 3.8f;
-    static constexpr float SPRINT_SPEED = 6.2f;
-    static constexpr float ROT_SPEED = 2.35f;
+    static constexpr float RUN_SPEED = 6.2f;
+    static constexpr float TURN_SPEED = 2.35f;
     static constexpr float PLAYER_RADIUS = 0.18f;
     static constexpr float MOUSE_SENSITIVITY = 0.0035f;
 
@@ -48,34 +40,19 @@ private:
         float angle;
     };
 
-    struct WindowSearchData
+    struct Ray
     {
-        DWORD processId;
-        HWND window;
-    };
-
-    struct RayInfo
-    {
-        float angleOffset;
         float sinOffset;
         float cosOffset;
     };
 
     Player player = { { 10.5f, 10.5f }, -0.35f };
 
-    HWND windowHandle = nullptr;
-
-    bool mouseLocked = false;
-    bool cursorHidden = false;
-    bool firstMouseFrame = true;
-    bool previousF2State = false;
-    bool previousLeftMouseState = false;
-
-    std::vector<RayInfo> rays;
-    std::vector<olc::Pixel> skyRows;
-    std::vector<olc::Pixel> floorRows;
-    std::vector<olc::Pixel> wallTextureVertical;
-    std::vector<olc::Pixel> wallTextureHorizontal;
+    std::vector<Ray> rays;
+    std::vector<uint32_t> skyRows;
+    std::vector<uint32_t> floorRows;
+    std::vector<uint32_t> wallTextureVertical;
+    std::vector<uint32_t> wallTextureHorizontal;
 
     std::vector<std::string> map =
     {
@@ -106,82 +83,6 @@ private:
     };
 
 private:
-    static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
-    {
-        WindowSearchData* data = reinterpret_cast<WindowSearchData*>(lParam);
-
-        DWORD windowProcessId = 0;
-        GetWindowThreadProcessId(hwnd, &windowProcessId);
-
-        if (windowProcessId != data->processId)
-            return TRUE;
-
-        if (!IsWindowVisible(hwnd))
-            return TRUE;
-
-        if (GetWindow(hwnd, GW_OWNER) != nullptr)
-            return TRUE;
-
-        RECT rect;
-        GetWindowRect(hwnd, &rect);
-
-        if ((rect.right - rect.left) <= 0 || (rect.bottom - rect.top) <= 0)
-            return TRUE;
-
-        data->window = hwnd;
-        return FALSE;
-    }
-
-    HWND FindOwnWindow()
-    {
-        if (windowHandle && IsWindow(windowHandle))
-            return windowHandle;
-
-        WindowSearchData data;
-        data.processId = GetCurrentProcessId();
-        data.window = nullptr;
-
-        EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&data));
-
-        windowHandle = data.window;
-        return windowHandle;
-    }
-
-    bool KeyDown(int key) const
-    {
-        return (GetAsyncKeyState(key) & 0x8000) != 0;
-    }
-
-    bool KeyPressedOnce(int key, bool& previousState)
-    {
-        const bool current = KeyDown(key);
-        const bool pressed = current && !previousState;
-        previousState = current;
-        return pressed;
-    }
-
-    float ClampFloat(float value, float minValue, float maxValue) const
-    {
-        if (value < minValue)
-            return minValue;
-
-        if (value > maxValue)
-            return maxValue;
-
-        return value;
-    }
-
-    int ClampInt(int value, int minValue, int maxValue) const
-    {
-        if (value < minValue)
-            return minValue;
-
-        if (value > maxValue)
-            return maxValue;
-
-        return value;
-    }
-
     int MapWidth() const
     {
         return static_cast<int>(map[0].size());
@@ -202,10 +103,7 @@ private:
 
     bool IsWallAt(float x, float y) const
     {
-        const int cellX = static_cast<int>(x);
-        const int cellY = static_cast<int>(y);
-
-        return IsWallCell(cellX, cellY);
+        return IsWallCell(static_cast<int>(x), static_cast<int>(y));
     }
 
     bool CanMoveTo(float x, float y) const
@@ -220,7 +118,6 @@ private:
 
     void BuildRayTable()
     {
-        rays.clear();
         rays.resize(ScreenWidth());
 
         const float screenWidth = static_cast<float>(ScreenWidth());
@@ -228,9 +125,8 @@ private:
         for (int x = 0; x < ScreenWidth(); ++x)
         {
             const float cameraX = 2.0f * static_cast<float>(x) / screenWidth - 1.0f;
-            const float angleOffset = std::atan(cameraX * HALF_FOV_TAN);
+            const float angleOffset = std::atan(cameraX * FOV_TAN_HALF);
 
-            rays[x].angleOffset = angleOffset;
             rays[x].sinOffset = std::sin(angleOffset);
             rays[x].cosOffset = std::cos(angleOffset);
         }
@@ -238,47 +134,29 @@ private:
 
     void BuildSkyFloorTables()
     {
-        skyRows.clear();
-        floorRows.clear();
+        const int halfHeight = ScreenHeight() / 2;
 
-        skyRows.resize(ScreenHeight() / 2);
-        floorRows.resize(ScreenHeight() / 2);
+        skyRows.resize(halfHeight);
+        floorRows.resize(halfHeight);
 
-        const int halfH = ScreenHeight() / 2;
-
-        for (int y = 0; y < halfH; ++y)
+        for (int y = 0; y < halfHeight; ++y)
         {
-            float t = static_cast<float>(y) / static_cast<float>(halfH);
+            const float t = static_cast<float>(y) / static_cast<float>(halfHeight);
 
-            uint8_t r = static_cast<uint8_t>(18.0f + 24.0f * t);
-            uint8_t g = static_cast<uint8_t>(22.0f + 27.0f * t);
-            uint8_t b = static_cast<uint8_t>(32.0f + 38.0f * t);
+            skyRows[y] = Color
+            (
+                static_cast<uint8_t>(18.0f + 24.0f * t),
+                static_cast<uint8_t>(22.0f + 27.0f * t),
+                static_cast<uint8_t>(32.0f + 38.0f * t)
+            );
 
-            skyRows[y] = olc::Pixel(r, g, b);
+            floorRows[y] = Color
+            (
+                static_cast<uint8_t>(42.0f - 16.0f * t),
+                static_cast<uint8_t>(38.0f - 15.0f * t),
+                static_cast<uint8_t>(32.0f - 12.0f * t)
+            );
         }
-
-        for (int y = 0; y < halfH; ++y)
-        {
-            float t = static_cast<float>(y) / static_cast<float>(halfH);
-
-            uint8_t r = static_cast<uint8_t>(42.0f - 16.0f * t);
-            uint8_t g = static_cast<uint8_t>(38.0f - 15.0f * t);
-            uint8_t b = static_cast<uint8_t>(32.0f - 12.0f * t);
-
-            floorRows[y] = olc::Pixel(r, g, b);
-        }
-    }
-
-    olc::Pixel ShadePixel(olc::Pixel base, float factor) const
-    {
-        factor = ClampFloat(factor, 0.0f, 1.0f);
-
-        return olc::Pixel
-        (
-            static_cast<uint8_t>(static_cast<float>(base.r) * factor),
-            static_cast<uint8_t>(static_cast<float>(base.g) * factor),
-            static_cast<uint8_t>(static_cast<float>(base.b) * factor)
-        );
     }
 
     void BuildWallTextures()
@@ -308,178 +186,27 @@ private:
                         mortar = true;
                 }
 
-                olc::Pixel verticalColor;
-                olc::Pixel horizontalColor;
-
                 if (mortar)
                 {
-                    verticalColor = olc::Pixel(80, 80, 82);
-                    horizontalColor = olc::Pixel(62, 62, 64);
+                    wallTextureVertical[y * TEXTURE_SIZE + x] = Color(80, 80, 82);
+                    wallTextureHorizontal[y * TEXTURE_SIZE + x] = Color(62, 62, 64);
                 }
                 else
                 {
-                    verticalColor = olc::Pixel(150, 150, 150);
-                    horizontalColor = olc::Pixel(112, 112, 112);
+                    wallTextureVertical[y * TEXTURE_SIZE + x] = Color(150, 150, 150);
+                    wallTextureHorizontal[y * TEXTURE_SIZE + x] = Color(112, 112, 112);
                 }
-
-                wallTextureVertical[y * TEXTURE_SIZE + x] = verticalColor;
-                wallTextureHorizontal[y * TEXTURE_SIZE + x] = horizontalColor;
             }
         }
-    }
-
-    POINT GetClientCenterScreenPoint() const
-    {
-        POINT center = { 0, 0 };
-
-        if (!windowHandle)
-            return center;
-
-        RECT clientRect;
-        GetClientRect(windowHandle, &clientRect);
-
-        center.x = (clientRect.right - clientRect.left) / 2;
-        center.y = (clientRect.bottom - clientRect.top) / 2;
-
-        ClientToScreen(windowHandle, &center);
-
-        return center;
-    }
-
-    void ConfineCursorToClientArea()
-    {
-        if (!windowHandle)
-            return;
-
-        RECT clientRect;
-        GetClientRect(windowHandle, &clientRect);
-
-        POINT topLeft = { clientRect.left, clientRect.top };
-        POINT bottomRight = { clientRect.right, clientRect.bottom };
-
-        ClientToScreen(windowHandle, &topLeft);
-        ClientToScreen(windowHandle, &bottomRight);
-
-        RECT clipRect;
-        clipRect.left = topLeft.x;
-        clipRect.top = topLeft.y;
-        clipRect.right = bottomRight.x;
-        clipRect.bottom = bottomRight.y;
-
-        ClipCursor(&clipRect);
-    }
-
-    void HideCursorHard()
-    {
-        if (cursorHidden)
-            return;
-
-        while (ShowCursor(FALSE) >= 0)
-        {
-        }
-
-        cursorHidden = true;
-    }
-
-    void ShowCursorHard()
-    {
-        if (!cursorHidden)
-            return;
-
-        while (ShowCursor(TRUE) < 0)
-        {
-        }
-
-        cursorHidden = false;
-    }
-
-    void EnableMouseLock()
-    {
-        FindOwnWindow();
-
-        if (!windowHandle)
-            return;
-
-        SetForegroundWindow(windowHandle);
-        SetFocus(windowHandle);
-        SetCapture(windowHandle);
-
-        mouseLocked = true;
-        firstMouseFrame = true;
-
-        ConfineCursorToClientArea();
-        HideCursorHard();
-
-        POINT center = GetClientCenterScreenPoint();
-        SetCursorPos(center.x, center.y);
-    }
-
-    void DisableMouseLock()
-    {
-        mouseLocked = false;
-        firstMouseFrame = true;
-
-        ClipCursor(nullptr);
-        ReleaseCapture();
-        ShowCursorHard();
-    }
-
-    void UpdateMouseLockControls()
-    {
-        if (KeyPressedOnce(VK_F2, previousF2State))
-        {
-            if (mouseLocked)
-                DisableMouseLock();
-            else
-                EnableMouseLock();
-        }
-
-        if (KeyPressedOnce(VK_LBUTTON, previousLeftMouseState))
-        {
-            if (!mouseLocked)
-                EnableMouseLock();
-        }
-    }
-
-    void UpdateMouseLook()
-    {
-        if (!mouseLocked)
-            return;
-
-        if (!windowHandle || !IsWindow(windowHandle))
-            FindOwnWindow();
-
-        if (!windowHandle)
-            return;
-
-        if (GetForegroundWindow() != windowHandle)
-        {
-            DisableMouseLock();
-            return;
-        }
-
-        const POINT center = GetClientCenterScreenPoint();
-
-        POINT mouse;
-        GetCursorPos(&mouse);
-
-        const int deltaX = mouse.x - center.x;
-
-        if (!firstMouseFrame)
-            player.angle += static_cast<float>(deltaX) * MOUSE_SENSITIVITY;
-
-        firstMouseFrame = false;
-
-        SetCursorPos(center.x, center.y);
     }
 
     void MovePlayer(float elapsedTime)
     {
         if (KeyDown(VK_LEFT))
-            player.angle -= ROT_SPEED * elapsedTime;
+            player.angle -= TURN_SPEED * elapsedTime;
 
         if (KeyDown(VK_RIGHT))
-            player.angle += ROT_SPEED * elapsedTime;
+            player.angle += TURN_SPEED * elapsedTime;
 
         const float sinAngle = std::sin(player.angle);
         const float cosAngle = std::cos(player.angle);
@@ -522,7 +249,7 @@ private:
             movement.x *= invLength;
             movement.y *= invLength;
 
-            const float speed = KeyDown(VK_SHIFT) ? SPRINT_SPEED : MOVE_SPEED;
+            const float speed = KeyDown(VK_SHIFT) ? RUN_SPEED : MOVE_SPEED;
 
             const float newX = player.position.x + movement.x * speed * elapsedTime;
             const float newY = player.position.y + movement.y * speed * elapsedTime;
@@ -535,42 +262,38 @@ private:
         }
     }
 
-    olc::Pixel FogPixelFast(olc::Pixel base, float fog) const
-    {
-        return olc::Pixel
-        (
-            static_cast<uint8_t>(static_cast<float>(base.r) * fog),
-            static_cast<uint8_t>(static_cast<float>(base.g) * fog),
-            static_cast<uint8_t>(static_cast<float>(base.b) * fog)
-        );
-    }
-
     void DrawSkyAndFloor()
     {
-        const int w = ScreenWidth();
-        const int halfH = ScreenHeight() / 2;
+        const int halfHeight = ScreenHeight() / 2;
 
-        for (int y = 0; y < halfH; ++y)
-            DrawLine(0, y, w, y, skyRows[y]);
+        for (int y = 0; y < halfHeight; ++y)
+            DrawHorizontalLine(0, ScreenWidth() - 1, y, skyRows[y]);
 
-        for (int y = 0; y < halfH; ++y)
-            DrawLine(0, halfH + y, w, halfH + y, floorRows[y]);
+        for (int y = 0; y < halfHeight; ++y)
+            DrawHorizontalLine(0, ScreenWidth() - 1, halfHeight + y, floorRows[y]);
+    }
+
+    uint32_t FogPixel(uint32_t color, float fog) const
+    {
+        return Color
+        (
+            static_cast<uint8_t>(static_cast<float>(GetR(color)) * fog),
+            static_cast<uint8_t>(static_cast<float>(GetG(color)) * fog),
+            static_cast<uint8_t>(static_cast<float>(GetB(color)) * fog)
+        );
     }
 
     void DrawWalls()
     {
-        const int screenW = ScreenWidth();
-        const int screenH = ScreenHeight();
-
         const float sinPlayer = std::sin(player.angle);
         const float cosPlayer = std::cos(player.angle);
 
         const int playerMapX = static_cast<int>(player.position.x);
         const int playerMapY = static_cast<int>(player.position.y);
 
-        for (int x = 0; x < screenW; ++x)
+        for (int x = 0; x < ScreenWidth(); ++x)
         {
-            const RayInfo& ray = rays[x];
+            const Ray& ray = rays[x];
 
             const float rayDirX = cosPlayer * ray.cosOffset - sinPlayer * ray.sinOffset;
             const float rayDirY = sinPlayer * ray.cosOffset + cosPlayer * ray.sinOffset;
@@ -665,24 +388,21 @@ private:
 
             const int texX = static_cast<int>(wallX * static_cast<float>(TEXTURE_SIZE)) & TEXTURE_MASK;
 
-            const int lineHeight = static_cast<int>(static_cast<float>(screenH) / correctedDistance);
-            const int wallTopUnclamped = -lineHeight / 2 + screenH / 2;
+            const int lineHeight = static_cast<int>(static_cast<float>(ScreenHeight()) / correctedDistance);
+            const int wallTop = -lineHeight / 2 + ScreenHeight() / 2;
 
-            int drawStart = wallTopUnclamped;
-            int drawEnd = lineHeight / 2 + screenH / 2;
-
-            drawStart = ClampInt(drawStart, 0, screenH - 1);
-            drawEnd = ClampInt(drawEnd, 0, screenH - 1);
+            int drawStart = ClampInt(wallTop, 0, ScreenHeight() - 1);
+            int drawEnd = ClampInt(lineHeight / 2 + ScreenHeight() / 2, 0, ScreenHeight() - 1);
 
             if (drawStart > drawEnd)
                 continue;
 
             const float texStep = static_cast<float>(TEXTURE_SIZE) / static_cast<float>(lineHeight);
-            float texPosition = static_cast<float>(drawStart - wallTopUnclamped) * texStep;
+            float texPosition = static_cast<float>(drawStart - wallTop) * texStep;
 
             const float fog = ClampFloat(1.0f / (1.0f + correctedDistance * 0.065f), 0.22f, 1.0f);
 
-            const std::vector<olc::Pixel>& texture = verticalSide
+            const std::vector<uint32_t>& texture = verticalSide
                 ? wallTextureVertical
                 : wallTextureHorizontal;
 
@@ -691,8 +411,8 @@ private:
                 const int texY = static_cast<int>(texPosition) & TEXTURE_MASK;
                 texPosition += texStep;
 
-                const olc::Pixel base = texture[texY * TEXTURE_SIZE + texX];
-                Draw(x, y, FogPixelFast(base, fog));
+                const uint32_t baseColor = texture[texY * TEXTURE_SIZE + texX];
+                Pixels()[y * ScreenWidth() + x] = FogPixel(baseColor, fog);
             }
         }
     }
@@ -702,29 +422,29 @@ private:
         const int cx = ScreenWidth() / 2;
         const int cy = ScreenHeight() / 2;
 
-        const olc::Pixel c = olc::Pixel(210, 210, 210);
+        const uint32_t color = Color(210, 210, 210);
 
-        DrawLine(cx - 5, cy, cx - 2, cy, c);
-        DrawLine(cx + 2, cy, cx + 5, cy, c);
-        DrawLine(cx, cy - 5, cx, cy - 2, c);
-        DrawLine(cx, cy + 2, cx, cy + 5, c);
+        DrawLine(cx - 5, cy, cx - 2, cy, color);
+        DrawLine(cx + 2, cy, cx + 5, cy, color);
+        DrawLine(cx, cy - 5, cx, cy - 2, color);
+        DrawLine(cx, cy + 2, cx, cy + 5, color);
     }
 
-    void DrawMiniMap()
+    void DrawMinimap()
     {
         const int cell = 4;
         const int offsetX = 10;
         const int offsetY = 10;
 
-        FillRect(offsetX - 4, offsetY - 4, MapWidth() * cell + 8, MapHeight() * cell + 8, olc::Pixel(5, 5, 5));
+        FillRect(offsetX - 4, offsetY - 4, MapWidth() * cell + 8, MapHeight() * cell + 8, Color(5, 5, 5));
 
         for (int y = 0; y < MapHeight(); ++y)
         {
             for (int x = 0; x < MapWidth(); ++x)
             {
-                const olc::Pixel color = IsWallCell(x, y)
-                    ? olc::Pixel(155, 155, 155)
-                    : olc::Pixel(25, 25, 25);
+                const uint32_t color = IsWallCell(x, y)
+                    ? Color(155, 155, 155)
+                    : Color(25, 25, 25);
 
                 FillRect(offsetX + x * cell, offsetY + y * cell, cell - 1, cell - 1, color);
             }
@@ -733,37 +453,25 @@ private:
         const int px = offsetX + static_cast<int>(player.position.x * static_cast<float>(cell));
         const int py = offsetY + static_cast<int>(player.position.y * static_cast<float>(cell));
 
-        FillCircle(px, py, 2, olc::Pixel(255, 40, 40));
+        FillCircle(px, py, 2, Color(255, 40, 40));
 
         const int lx = px + static_cast<int>(std::cos(player.angle) * 12.0f);
         const int ly = py + static_cast<int>(std::sin(player.angle) * 12.0f);
 
-        DrawLine(px, py, lx, ly, olc::Pixel(255, 40, 40));
-    }
-
-    void DrawHelp()
-    {
-        FillRect(8, 8, 405, 64, olc::Pixel(0, 0, 0));
-        DrawString(14, 14, "RetroTech v0.5 wall optimized", olc::Pixel(255, 255, 255));
-        DrawString(14, 26, "Wall columns use precomputed ray sin/cos", olc::Pixel(230, 230, 80));
-        DrawString(14, 38, "Texture Y uses step, fog once per column", olc::Pixel(230, 230, 80));
-        DrawString(14, 50, "F2 mouse lock | TAB map | F1 help | ESC exit", olc::Pixel(230, 230, 80));
+        DrawLine(px, py, lx, ly, Color(255, 40, 40));
     }
 
     void DrawMouseStatus()
     {
-        if (mouseLocked)
+        if (IsMouseLocked())
             return;
 
-        FillRect(ScreenWidth() / 2 - 115, ScreenHeight() / 2 - 10, 230, 20, olc::Pixel(0, 0, 0));
-        DrawString(ScreenWidth() / 2 - 105, ScreenHeight() / 2 - 4, "CLICK TO CAPTURE MOUSE", olc::Pixel(255, 255, 0));
+        FillRect(ScreenWidth() / 2 - 80, ScreenHeight() / 2 - 5, 160, 10, Color(0, 0, 0));
     }
 
-public:
-    bool OnUserCreate() override
+protected:
+    bool OnCreate() override
     {
-        FindOwnWindow();
-
         BuildRayTable();
         BuildSkyFloorTables();
         BuildWallTextures();
@@ -771,16 +479,19 @@ public:
         return true;
     }
 
-    bool OnUserUpdate(float elapsedTime) override
+    void OnMouseMove(float mouseDeltaX) override
+    {
+        player.angle += mouseDeltaX * MOUSE_SENSITIVITY;
+    }
+
+    bool OnUpdate(float elapsedTime) override
     {
         if (KeyDown(VK_ESCAPE))
         {
-            DisableMouseLock();
+            UnlockMouse();
             return false;
         }
 
-        UpdateMouseLockControls();
-        UpdateMouseLook();
         MovePlayer(elapsedTime);
 
         DrawSkyAndFloor();
@@ -788,29 +499,26 @@ public:
         DrawCrosshair();
 
         if (KeyDown(VK_TAB))
-            DrawMiniMap();
-
-        if (KeyDown(VK_F1))
-            DrawHelp();
+            DrawMinimap();
 
         DrawMouseStatus();
 
         return true;
     }
-
-    bool OnUserDestroy() override
-    {
-        DisableMouseLock();
-        return true;
-    }
 };
+
+int RunRetroTech()
+{
+    RetroTech game;
+    return game.Run();
+}
 
 int main()
 {
-    RetroTechEngine engine;
+    return RunRetroTech();
+}
 
-    if (engine.Construct(640, 360, 2, 2))
-        engine.Start();
-
-    return 0;
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
+{
+    return RunRetroTech();
 }
