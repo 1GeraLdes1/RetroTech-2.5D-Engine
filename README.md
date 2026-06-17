@@ -2,12 +2,14 @@
 
 **RetroTech** is an experimental 2.5D software raycasting engine written in C++.
 
-The project is designed as a low-level learning engine inspired by old pseudo-3D games. Wall rendering is done through raycasting, without Unity, Unreal Engine, SFML, or any ready-made 3D engine.
+The project is built as a low-level learning engine inspired by classic pseudo-3D games. It does not use Unity, Unreal Engine, SFML, SDL, or olcPixelGameEngine. The engine uses its own small WinAPI-based pixel backend called **CustomPixelEngine**.
 
 ## Features
 
 * 2.5D raycasting renderer
-* Software wall rendering
+* Custom WinAPI-based pixel engine
+* Software framebuffer rendering
+* Manual pixel drawing
 * Procedural wall texture
 * Distance fog
 * WASD player movement
@@ -15,8 +17,40 @@ The project is designed as a low-level learning engine inspired by old pseudo-3D
 * Mouse capture
 * Wall collision
 * Minimap
+* FPS counter in the window title
 * Optimized wall rendering
-* Single `.cpp` source file
+* No external game engine dependency
+
+## CustomPixelEngine
+
+RetroTech uses a custom pixel backend instead of an external game framework.
+
+`CustomPixelEngine` handles:
+
+* window creation through WinAPI
+* software framebuffer
+* pixel output through `StretchDIBits`
+* drawing primitives
+* keyboard input
+* mouse capture
+* mouse look support
+* FPS counter
+* main game loop
+
+The raycasting renderer itself is implemented inside the RetroTech engine code.
+
+## How It Works
+
+The engine uses raycasting to create a 2.5D view.
+
+For every vertical column of the screen, the engine casts a ray from the player position into the map. The ray moves through the grid until it hits a wall. After that, the engine calculates the distance to the wall and draws a vertical textured column on the screen.
+
+Closer walls are drawn taller, while distant walls are drawn shorter. This creates a pseudo-3D perspective.
+
+The map is currently stored as a simple grid:
+
+* `1` means wall
+* `0` means empty space
 
 ## Controls
 
@@ -31,36 +65,36 @@ The project is designed as a low-level learning engine inspired by old pseudo-3D
 | Left Mouse Button | Capture mouse        |
 | F2                | Toggle mouse capture |
 | TAB               | Show minimap         |
-| F1                | Show help            |
 | ESC               | Exit                 |
 
-## Dependencies
+## Project Structure
 
-This project uses:
-
-* C++
-* Visual Studio
-* Windows API
-* olcPixelGameEngine
-
-The file `olcPixelGameEngine.h` must be placed next to the main source file.
+```text
+RetroTech/
+ ├── CustomPixelEngine.h
+ ├── RetroTech.cpp
+ ├── README.md
+ └── .gitignore
+```
 
 ## Building
 
-Open the `.sln` file in Visual Studio and build the project.
+Open the project in Visual Studio and build it as a C++ Windows application.
 
-Alternatively, create a new C++ project and add:
+The project currently targets Windows because it uses WinAPI directly.
+
+Required files:
 
 ```text
-main.cpp
-olcPixelGameEngine.h
+CustomPixelEngine.h
+RetroTech.cpp
 ```
 
-## Project Status
+## Current Status
 
-This project is in an early prototype stage.
+RetroTech is an early prototype.
 
-The current version is a basic 2.5D engine prototype with raycasting rendering, player movement, mouse look, wall collision, and basic wall-rendering optimization.
+The current version includes a basic raycasting renderer, player movement, collision, mouse look, a minimap, a custom pixel backend, and basic rendering optimization.
 
 ## Planned Features
 
@@ -72,17 +106,11 @@ The current version is a basic 2.5D engine prototype with raycasting rendering, 
 * Weapons
 * Floor and ceiling textures
 * Level editor
-* More advanced rendering optimization
-
-## Credits
-
-This project uses **olcPixelGameEngine** by OneLoneCoder.
-
-olcPixelGameEngine is licensed separately under the OLC-3 license.
+* Better renderer structure
+* More advanced optimization
 
 ## License
 
 No license has been selected for RetroTech yet.
 
 All rights to the RetroTech source code are reserved unless a license is added later.
-
